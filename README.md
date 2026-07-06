@@ -1,9 +1,10 @@
 <p align="center">
-  <img src="logo/logo.png" alt="Sweetgrass" width="200" />
+  <img src="logo/sweetgrass-wordmark.svg" alt="Sweetgrass" width="360" />
 </p>
 
 <p align="center">
-  A visual developer workspace for <a href="https://github.com/gastownhall/beads">Beads CLI</a>: Kanban boards, multi-project status, GitOps, epics, project memory, and agent configuration.
+  <strong>A local visual workspace for Beads-powered developer teams.</strong><br />
+  Kanban boards, multi-project status, GitOps, epics, project memory, and agent configuration for <a href="https://github.com/gastownhall/beads">Beads CLI</a>.
 </p>
 
 <p align="center">
