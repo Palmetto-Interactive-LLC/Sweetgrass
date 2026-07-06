@@ -1,0 +1,557 @@
+"use client";
+
+import { useMemo, useRef, useState, useCallback, useEffect } from "react";
+
+import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
+
+import { ArrowLeft, LayoutGrid, Rows3 } from "lucide-react";
+
+import { ActivityTimeline } from "@/components/activity-timeline";
+import { AgentsPanel } from "@/components/agents-panel";
+import { BeadDetail } from "@/components/bead-detail";
+import { BeadsTableView, type TableDensity } from "@/components/beads-table-view";
+import { CommentList } from "@/components/comment-list";
+import { EditableProjectName } from "@/components/editable-project-name";
+import { KanbanColumn } from "@/components/kanban-column";
+import { MemoryPanel } from "@/components/memory-panel";
+import { QuickFilterBar } from "@/components/quick-filter-bar";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogClose,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { useBeadFilters } from "@/hooks/use-bead-filters";
+import { useBeads } from "@/hooks/use-beads";
+import { useGitHubStatus } from "@/hooks/use-github-status";
+import { useKeyboardNavigation } from "@/hooks/use-keyboard-navigation";
+import { useProject } from "@/hooks/use-project";
+import { useWorktreeStatuses } from "@/hooks/use-worktree-statuses";
+import { isBlocked, isReadyToWork } from "@/lib/bead-display";
+import { getUnknownStatusBeads, getUnknownStatusNames } from "@/lib/beads-parser";
+import { deriveEpicStatus } from "@/lib/epic-parser";
+import type { Bead, BeadStatus, Epic } from "@/types";
+
+/**
+ * Column configuration for the Kanban board
+ * Note: Cancelled status is hidden per requirements
+ */
+const COLUMNS: { status: BeadStatus; title: string }[] = [
+  { status: "open", title: "Open" },
+  { status: "in_progress", title: "In Progress" },
+  { status: "inreview", title: "In Review" },
+  { status: "closed", title: "Closed" },
+];
+
+/**
+ * Issue type filter options
+ */
+type IssueTypeFilter = "epics" | "tasks";
+
+/**
+ * Main Kanban board component with 4 columns, search, filter, and keyboard navigation
+ */
+export default function KanbanBoard() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const projectId = searchParams.get('id');
+
+  // Fetch project data from SQLite
+  const {
+    project,
+    isLoading: projectLoading,
+    error: projectError,
+    refetch: refetchProject,
+  } = useProject(projectId);
+
+  // Fetch beads from project path
+  const {
+    beads,
+    ticketNumbers,
+    isLoading: beadsLoading,
+    error: beadsError,
+    refresh: refreshBeads,
+  } = useBeads(project?.path ?? "");
+
+  // Use the bead filters hook with 300ms debounce
+  const {
+    filters,
+    setFilters,
+    filteredBeads,
+    clearFilters,
+    hasActiveFilters,
+    availableOwners,
+  } = useBeadFilters(beads, ticketNumbers, 300);
+
+  // Issue type filter state (epics vs tasks)
+  const [typeFilter, setTypeFilter] = useState<IssueTypeFilter>("epics");
+
+  // View mode (board | table) — driven by ?view= so it's shareable/bookmarkable.
+  const view = searchParams.get("view") === "table" ? "table" : "board";
+  const setView = useCallback(
+    (next: "board" | "table") => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "table") params.set("view", "table");
+      else params.delete("view");
+      router.replace(`/project?${params.toString()}`);
+    },
+    [searchParams, router]
+  );
+
+  // Table density (local, not persisted).
+  const [density, setDensity] = useState<TableDensity>("comfortable");
+
+  // Derived work-state filters (blocked / ready-to-work).
+  const [readyOnly, setReadyOnly] = useState(false);
+  const [blockedOnly, setBlockedOnly] = useState(false);
+
+  // GitHub status check
+  const { hasRemote, isAuthenticated, isLoading: githubStatusLoading } = useGitHubStatus(
+    project?.path ?? null
+  );
+
+  // Track whether the GitHub warning has been dismissed (session-only)
+  const [githubWarningDismissed, setGithubWarningDismissed] = useState(false);
+
+  // Memory panel state
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+
+  // Agents panel state
+  const [isAgentsOpen, setIsAgentsOpen] = useState(false);
+
+  // Show GitHub warning if project loaded, status checked, and either no remote or not authenticated
+  const showGitHubWarning = !projectLoading &&
+    !githubStatusLoading &&
+    project !== null &&
+    !githubWarningDismissed &&
+    (!hasRemote || !isAuthenticated);
+
+  /**
+   * Toggle a status in the filter
+   */
+  const toggleStatus = useCallback((status: BeadStatus) => {
+    const newStatuses = filters.statuses.includes(status)
+      ? filters.statuses.filter(s => s !== status)
+      : [...filters.statuses, status];
+    setFilters({ statuses: newStatuses });
+  }, [filters.statuses, setFilters]);
+
+  /**
+   * Toggle an owner in the filter
+   */
+  const toggleOwner = useCallback((owner: string) => {
+    const newOwners = filters.owners.includes(owner)
+      ? filters.owners.filter(o => o !== owner)
+      : [...filters.owners, owner];
+    setFilters({ owners: newOwners });
+  }, [filters.owners, setFilters]);
+
+  // Filter out closed beads to avoid unnecessary polling for finalized tasks
+  const beadIds = useMemo(() => beads.filter(b => b.status !== 'closed').map(b => b.id), [beads]);
+
+  // Worktree statuses for PR workflow
+  const { statuses: worktreeStatuses } = useWorktreeStatuses(
+    project?.path ?? "",
+    beadIds
+  );
+
+  /**
+   * The beads rendered as cards, per the two-grain view model:
+   * - Epic view: ONLY epics (their children render nested inside the epic card,
+   *   not as separate column cards); standalone tasks are hidden here.
+   * - Task view: ALL tasks (every task, whether it lives under an epic or is
+   *   standalone), rendered flat; epics themselves are excluded.
+   */
+  const topLevelBeads = useMemo(() => {
+    let displayed: Bead[];
+
+    if (typeFilter === "epics") {
+      // Epics only.
+      displayed = filteredBeads.filter(b => b.issue_type === "epic");
+    } else {
+      // All tasks (non-epics), including those parented under an epic.
+      displayed = filteredBeads.filter(b => b.issue_type !== "epic");
+    }
+
+    // Apply derived work-state filters.
+    if (readyOnly) displayed = displayed.filter(isReadyToWork);
+    if (blockedOnly) displayed = displayed.filter(isBlocked);
+
+    return displayed;
+  }, [filteredBeads, typeFilter, readyOnly, blockedOnly]);
+
+  /**
+   * Group top-level beads by status for columns.
+   * Defensive: falls back to 'open' for any status not in the 4 columns.
+   */
+  const filteredBeadsByStatus = useMemo(() => {
+    const grouped: Record<BeadStatus, Bead[]> = {
+      open: [],
+      in_progress: [],
+      inreview: [],
+      closed: [],
+    };
+    for (const bead of topLevelBeads) {
+      // Epics follow their children: an epic with in-progress work belongs in
+      // the In Progress column even if its own stored status is still 'open'.
+      const effectiveStatus =
+        bead.issue_type === "epic"
+          ? deriveEpicStatus(bead as Epic, beads)
+          : bead.status;
+      const column = grouped[effectiveStatus] ? effectiveStatus : 'open';
+      grouped[column].push(bead);
+    }
+    return grouped;
+  }, [topLevelBeads, beads]);
+
+  /**
+   * Detect beads with truly unknown statuses for the warning indicator.
+   */
+  const unknownStatusBeads = useMemo(() => getUnknownStatusBeads(beads), [beads]);
+  const unknownStatusNames = useMemo(() => getUnknownStatusNames(beads), [beads]);
+
+  // Detail sheet state
+  const [detailBeadId, setDetailBeadId] = useState<string | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+
+  // Get the actual bead from the current beads array to ensure fresh data
+  const detailBead = useMemo(() => {
+    if (!detailBeadId) return null;
+    return beads.find((b) => b.id === detailBeadId) || null;
+  }, [detailBeadId, beads]);
+
+  // Ref for search input (keyboard navigation)
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Keyboard navigation (use top-level beads for navigation)
+  const { selectedId } = useKeyboardNavigation({
+    beads: topLevelBeads,
+    beadsByStatus: filteredBeadsByStatus,
+    selectedId: null,
+    onSelect: () => {
+      // Just highlight, don't open detail
+    },
+    onOpen: (bead) => {
+      setDetailBeadId(bead.id);
+      setIsDetailOpen(true);
+    },
+    onClose: () => {
+      setIsDetailOpen(false);
+    },
+    searchInputRef,
+    isDetailOpen,
+  });
+
+  // Redirect if no project ID
+  useEffect(() => {
+    if (!projectId) {
+      router.replace("/");
+    }
+  }, [projectId, router]);
+
+  /**
+   * Handle bead selection - opens detail panel
+   * Works for both epics and standalone tasks
+   */
+  const handleSelectBead = (bead: Bead) => {
+    setDetailBeadId(bead.id);
+    setIsDetailOpen(true);
+  };
+
+  /**
+   * Handle child task click from within an epic
+   */
+  const handleChildClick = (child: Bead) => {
+    setDetailBeadId(child.id);
+    setIsDetailOpen(true);
+  };
+
+  /**
+   * Handle navigation to a dependency from DependencyBadge
+   */
+  const handleNavigateToDependency = (beadId: string) => {
+    setDetailBeadId(beadId);
+    setIsDetailOpen(true);
+  };
+
+  /**
+   * Handle navigation from Memory panel to a bead
+   * Closes the memory panel and opens the bead detail
+   */
+  const handleMemoryNavigateToBead = useCallback((beadId: string) => {
+    setIsMemoryOpen(false);
+    // Find the bead - it may be a child task with a dot ID
+    const found = beads.find((b) => b.id === beadId);
+    if (found) {
+      setDetailBeadId(found.id);
+      setIsDetailOpen(true);
+      return;
+    }
+    // Fall back to the parent bead when a dotted child ID isn't loaded directly
+    const dotIndex = beadId.lastIndexOf(".");
+    if (dotIndex > 0) {
+      const parent = beads.find((b) => b.id === beadId.slice(0, dotIndex));
+      if (parent) {
+        setDetailBeadId(parent.id);
+        setIsDetailOpen(true);
+      }
+    }
+  }, [beads]);
+
+  // Redirect state while no project ID
+  if (!projectId) {
+    return (
+      <div className="dark flex min-h-dvh items-center justify-center bg-[#0a0a0a]">
+        <p className="text-zinc-500">Redirecting…</p>
+      </div>
+    );
+  }
+
+  // Show loading state
+  if (projectLoading) {
+    return (
+      <div className="dark flex items-center justify-center min-h-dvh bg-[#0a0a0a]">
+        <div role="status" className="text-zinc-500">Loading project…</div>
+      </div>
+    );
+  }
+
+  // Show project error state
+  if (projectError) {
+    return (
+      <div className="dark flex flex-col items-center justify-center min-h-dvh bg-[#0a0a0a] gap-4">
+        <div role="alert" className="text-red-400">Error: {projectError.message}</div>
+        <Button variant="outline" asChild>
+          <Link href="/">Back to projects</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  // Project not found
+  if (!project) {
+    return (
+      <div className="dark flex flex-col items-center justify-center min-h-dvh bg-[#0a0a0a] gap-4">
+        <div className="text-zinc-500">Project not found</div>
+        <Button variant="outline" asChild>
+          <Link href="/">Back to projects</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dark min-h-dvh bg-[#0a0a0a] flex flex-col">
+      {/* Breadcrumb line */}
+      <div className="flex items-center gap-2 px-4 py-2">
+        <Button variant="ghost" size="icon" asChild>
+          <Link href="/">
+            <ArrowLeft className="h-4 w-4" />
+            <span className="sr-only">Back to projects</span>
+          </Link>
+        </Button>
+        <EditableProjectName
+          projectId={project.id}
+          initialName={project.name}
+          onNameUpdated={refetchProject}
+        />
+
+        {/* View toggle: Board | Table */}
+        <div className="ml-auto flex items-center gap-2">
+          {view === "table" && (
+            <div className="flex items-center rounded-md border border-zinc-800 p-0.5 text-xs">
+              <button
+                onClick={() => setDensity("comfortable")}
+                className={`rounded px-2 py-1 ${density === "comfortable" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              >
+                Comfortable
+              </button>
+              <button
+                onClick={() => setDensity("compact")}
+                className={`rounded px-2 py-1 ${density === "compact" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              >
+                Compact
+              </button>
+            </div>
+          )}
+          <div className="flex items-center rounded-md border border-zinc-800 p-0.5">
+            <button
+              onClick={() => setView("board")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs ${view === "board" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              aria-pressed={view === "board"}
+            >
+              <LayoutGrid className="size-3.5" /> Board
+            </button>
+            <button
+              onClick={() => setView("table")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs ${view === "table" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              aria-pressed={view === "table"}
+            >
+              <Rows3 className="size-3.5" /> Table
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Filter Bar */}
+      <div className="flex justify-center px-4 pb-3">
+        <QuickFilterBar
+          // Search
+          search={filters.search}
+          onSearchChange={(value) => setFilters({ search: value })}
+          searchInputRef={searchInputRef}
+          // Type filter
+          typeFilter={typeFilter}
+          onTypeFilterChange={setTypeFilter}
+          // Today
+          todayOnly={filters.todayOnly}
+          onTodayOnlyChange={(value) => setFilters({ todayOnly: value })}
+          // Derived work-state filters
+          readyOnly={readyOnly}
+          onReadyOnlyChange={(value) => { setReadyOnly(value); if (value) setBlockedOnly(false); }}
+          blockedOnly={blockedOnly}
+          onBlockedOnlyChange={(value) => { setBlockedOnly(value); if (value) setReadyOnly(false); }}
+          // Sort
+          sortField={filters.sortField}
+          sortDirection={filters.sortDirection}
+          onSortChange={(field, direction) => setFilters({ sortField: field, sortDirection: direction })}
+          // Status/Owner filters
+          statuses={filters.statuses}
+          onStatusToggle={toggleStatus}
+          owners={filters.owners}
+          onOwnerToggle={toggleOwner}
+          availableOwners={availableOwners}
+          onClearFilters={clearFilters}
+          hasActiveFilters={hasActiveFilters}
+          // Memory
+          isMemoryOpen={isMemoryOpen}
+          onMemoryToggle={() => setIsMemoryOpen((prev) => !prev)}
+          // Agents
+          isAgentsOpen={isAgentsOpen}
+          onAgentsToggle={() => setIsAgentsOpen((prev) => !prev)}
+          // Unknown status warning
+          unknownStatusCount={unknownStatusBeads.length}
+          unknownStatusNames={unknownStatusNames}
+        />
+      </div>
+
+      {/* Kanban Columns */}
+      <main className="flex-1 overflow-hidden p-4">
+        {beadsLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <div role="status" className="text-zinc-500">Loading beads…</div>
+          </div>
+        ) : beadsError ? (
+          <div className="flex items-center justify-center h-full">
+            <div role="alert" className="text-red-400">Error loading beads: {beadsError.message}</div>
+          </div>
+        ) : view === "table" ? (
+          <div className="h-full overflow-auto">
+            <BeadsTableView
+              topLevelBeads={topLevelBeads}
+              allBeads={beads}
+              view={typeFilter}
+              density={density}
+              onSelectBead={handleSelectBead}
+            />
+          </div>
+        ) : (
+          <div className="grid grid-cols-4 gap-4 h-full">
+            {COLUMNS.map(({ status, title }) => (
+              <KanbanColumn
+                key={status}
+                status={status}
+                title={title}
+                beads={filteredBeadsByStatus[status] || []}
+                allBeads={beads}
+                selectedBeadId={selectedId}
+                ticketNumbers={ticketNumbers}
+                onSelectBead={handleSelectBead}
+                onChildClick={handleChildClick}
+                onNavigateToDependency={handleNavigateToDependency}
+                projectPath={project?.path}
+                onUpdate={refreshBeads}
+              />
+            ))}
+          </div>
+        )}
+      </main>
+
+      {/* Bead Detail Sheet */}
+      {detailBead && (
+        <BeadDetail
+          bead={detailBead}
+          ticketNumber={ticketNumbers.get(detailBead.id)}
+          worktreeStatus={worktreeStatuses[detailBead.id]}
+          open={isDetailOpen}
+          onOpenChange={(open) => {
+            setIsDetailOpen(open);
+            if (!open) {
+              setDetailBeadId(null);
+            }
+          }}
+          projectPath={project?.path ?? ""}
+          allBeads={beads}
+          onChildClick={handleChildClick}
+        >
+          <CommentList
+            comments={detailBead.comments}
+            beadId={detailBead.id}
+            projectPath={project?.path ?? ""}
+            onCommentAdded={refreshBeads}
+          />
+          <ActivityTimeline
+            bead={detailBead}
+            comments={detailBead.comments}
+            childBeads={(detailBead.children || [])
+              .map(id => beads.find(b => b.id === id))
+              .filter((b): b is Bead => !!b)}
+          />
+        </BeadDetail>
+      )}
+
+      {/* Memory Panel */}
+      {project?.path && (
+        <MemoryPanel
+          open={isMemoryOpen}
+          onOpenChange={setIsMemoryOpen}
+          projectPath={project.path}
+          onNavigateToBead={handleMemoryNavigateToBead}
+        />
+      )}
+
+      {/* Agents Panel */}
+      {project?.path && (
+        <AgentsPanel
+          open={isAgentsOpen}
+          onOpenChange={setIsAgentsOpen}
+          projectPath={project.path}
+        />
+      )}
+
+      {/* GitHub Integration Warning Dialog */}
+      <AlertDialog open={showGitHubWarning} onOpenChange={(open) => !open && setGithubWarningDismissed(true)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>GitHub Integration Unavailable</AlertDialogTitle>
+            <AlertDialogDescription>
+              {!hasRemote
+                ? "This repository doesn't have a GitHub remote configured."
+                : "GitHub CLI is not authenticated."}
+              {" "}PR features (Create PR, Merge PR, status checks) will not be available.
+              You can still work on tasks locally.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button>Continue Without GitHub</Button>} />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

@@ -1,0 +1,523 @@
+/**
+ * Frontend API layer for Sweetgrass webapp
+ * Replaces Tauri invoke() calls with HTTP fetch to backend
+ */
+
+import type { Project, Tag, Bead, WorktreeStatus, WorktreeEntry, PRStatus, PRFilesResponse, MemoryResponse, MemoryStats, MemoryEntry, MemoryType, KvMemory, MemoryListFilters, Agent, AgentModel } from '@/types';
+
+// Default to same-origin (relative URLs) so the embedded frontend works from
+// any host the backend is reached on (localhost, a LAN IP, a Tailscale name),
+// not just localhost. Set NEXT_PUBLIC_BACKEND_URL to target a separate backend
+// (e.g. `npm run dev` frontend on :3007 → backend on :3008).
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+
+/**
+ * API contract version this UI build speaks. Must be bumped together with
+ * `API_CONTRACT_VERSION` in `server/src/routes/contract.rs` on any breaking
+ * change to a request/response shape. The server stamps every response with
+ * the `x-sweetgrass-api-version` header; `fetchApi` compares it so a contract
+ * bump is detected instead of silently breaking.
+ */
+export const EXPECTED_API_VERSION = 1;
+
+/** Response header carrying the server's API contract version. */
+export const API_VERSION_HEADER = 'x-sweetgrass-api-version';
+
+/** Name of the CustomEvent dispatched (once) when a contract mismatch is seen. */
+export const API_VERSION_MISMATCH_EVENT = 'sweetgrass:api-version-mismatch';
+
+/**
+ * Details of a detected API contract version mismatch
+ */
+export interface ApiVersionMismatch {
+  expected: number;
+  actual: number;
+}
+
+let reportedMismatch: ApiVersionMismatch | null = null;
+
+/**
+ * The API contract mismatch observed this session, if any.
+ * Null means every versioned response seen so far matched EXPECTED_API_VERSION.
+ */
+export function getApiVersionMismatch(): ApiVersionMismatch | null {
+  return reportedMismatch;
+}
+
+/**
+ * Compare the server's contract version header against this build's expected
+ * version. On the first mismatch: warn, record it, and dispatch
+ * API_VERSION_MISMATCH_EVENT so the UI can surface a banner. Non-fatal by
+ * design — a skewed UI keeps working as well as it can, but the skew is
+ * visible instead of silent.
+ */
+function checkApiVersion(res: Response): void {
+  const raw = res.headers.get(API_VERSION_HEADER);
+  if (raw === null) return; // pre-versioning server; nothing to compare
+  const actual = Number(raw);
+  if (!Number.isInteger(actual) || actual === EXPECTED_API_VERSION) return;
+  if (reportedMismatch) return; // report once per session
+  reportedMismatch = { expected: EXPECTED_API_VERSION, actual };
+  console.warn(
+    `Sweetgrass API contract mismatch: UI speaks v${EXPECTED_API_VERSION}, ` +
+    `server sent v${actual}. Rebuild/redeploy so both sides match.`
+  );
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent<ApiVersionMismatch>(API_VERSION_MISMATCH_EVENT, {
+        detail: reportedMismatch,
+      })
+    );
+  }
+}
+
+/**
+ * Input for creating a new project
+ */
+export interface CreateProjectInput {
+  name: string;
+  path: string;
+}
+
+/**
+ * Input for creating a new tag
+ */
+export interface CreateTagInput {
+  name: string;
+  color: string;
+}
+
+/**
+ * File system entry from directory listing
+ */
+export interface FsEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+}
+
+/**
+ * Git branch status information
+ */
+export interface BranchStatus {
+  exists: boolean;
+  ahead: number;
+  behind: number;
+}
+
+/**
+ * BD CLI command result
+ */
+export interface BdCommandResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+/**
+ * File watcher event
+ */
+export interface WatchEvent {
+  path: string;
+  type: string;
+}
+
+/**
+ * Helper for fetch with error handling
+ */
+async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+  checkApiVersion(res);
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+/**
+ * Projects API
+ */
+export const projects = {
+  list: () => fetchApi<Project[]>('/api/projects'),
+
+  create: (data: CreateProjectInput) => fetchApi<Project>('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+
+  update: (id: string, data: Partial<Project>) => fetchApi<Project>(`/api/projects/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  }),
+
+  delete: (id: string) => fetchApi<void>(`/api/projects/${id}`, { method: 'DELETE' }),
+};
+
+/**
+ * Tags API
+ */
+export const tags = {
+  list: () => fetchApi<Tag[]>('/api/tags'),
+
+  create: (data: CreateTagInput) => fetchApi<Tag>('/api/tags', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+
+  delete: (id: string) => fetchApi<void>(`/api/tags/${id}`, { method: 'DELETE' }),
+
+  addToProject: (projectId: string, tagId: string) => fetchApi<void>('/api/project-tags', {
+    method: 'POST',
+    body: JSON.stringify({ projectId, tagId }),
+  }),
+
+  removeFromProject: (projectId: string, tagId: string) => fetchApi<void>(
+    `/api/project-tags/${projectId}/${tagId}`,
+    { method: 'DELETE' }
+  ),
+};
+
+/**
+ * Versioned envelope returned by GET /api/beads.
+ * The version/source fields are additive over the original { beads } shape,
+ * so they are optional to tolerate older servers.
+ */
+export interface BeadsReadResponse {
+  beads: Bead[];
+  /** API contract version stamped by the server. */
+  api_version?: number;
+  /** Where the ledger was read from: the bd CLI (source of truth) or the JSONL fallback. */
+  source?: 'bd' | 'jsonl';
+  /** Schema version of the bd binary that produced the data; null on the JSONL fallback. */
+  bd_schema_version?: number | null;
+}
+
+/**
+ * Version info about the local bd binary, as observed by the server
+ */
+export interface BdVersionInfo {
+  available: boolean;
+  version: string | null;
+  schema_version: number | null;
+}
+
+/**
+ * Response from GET /api/version
+ */
+export interface VersionResponse {
+  api_version: number;
+  server_version: string;
+  bd: BdVersionInfo;
+  supported_bd_schema: { min: number; max: number };
+  /** Whether bd's schema_version is in the server's supported range; null when unknown. */
+  bd_schema_supported: boolean | null;
+}
+
+/**
+ * Version API — the UI↔server contract and bd schema versions
+ */
+export const version = {
+  get: () => fetchApi<VersionResponse>('/api/version'),
+};
+
+/**
+ * Beads API
+ */
+export const beads = {
+  read: (path: string) => fetchApi<BeadsReadResponse>(
+    `/api/beads?path=${encodeURIComponent(path)}`
+  ),
+
+  addComment: (path: string, beadId: string, text: string, author: string) =>
+    fetchApi<Bead>('/api/beads/comment', {
+      method: 'POST',
+      body: JSON.stringify({ path, bead_id: beadId, text, author }),
+    }),
+};
+
+/**
+ * Parse `bd memories --json` stdout into a list of KV memories.
+ *
+ * The output is a flat object of key → value strings plus a
+ * `schema_version` metadata field. Tolerates any non-JSON noise around the
+ * object by slicing from the first `{` to the last `}`.
+ */
+export function parseKvMemories(stdout: string): KvMemory[] {
+  const start = stdout.indexOf('{');
+  const end = stdout.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error('bd memories returned no JSON object');
+  }
+  const parsed = JSON.parse(stdout.slice(start, end + 1)) as Record<string, unknown>;
+  return Object.entries(parsed)
+    .filter((pair): pair is [string, string] =>
+      pair[0] !== 'schema_version' && typeof pair[1] === 'string'
+    )
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * BD CLI API
+ */
+export const bd = {
+  command: (args: string[], cwd?: string) => fetchApi<BdCommandResult>('/api/bd/command', {
+    method: 'POST',
+    body: JSON.stringify({ args, cwd }),
+  }),
+
+  /**
+   * Upstream bd KV memory (System A): `bd remember/memories/forget`.
+   * Distinct from the knowledge.jsonl `memory` API below.
+   */
+  listMemories: async (cwd: string): Promise<KvMemory[]> => {
+    const result = await bd.command(['memories', '--json'], cwd);
+    return parseKvMemories(result.stdout);
+  },
+
+  /** Store (or update, when `key` exists) a KV memory via `bd remember` */
+  remember: (cwd: string, value: string, key?: string) =>
+    bd.command(key ? ['remember', value, '--key', key] : ['remember', value], cwd),
+
+  /** Delete a KV memory by key via `bd forget` */
+  forget: (cwd: string, key: string) => bd.command(['forget', key], cwd),
+};
+
+/**
+ * Worktree creation response
+ */
+export interface CreateWorktreeResponse {
+  success: boolean;
+  worktree_path: string;
+  branch: string;
+  already_existed: boolean;
+}
+
+/**
+ * Worktree deletion response
+ */
+export interface DeleteWorktreeResponse {
+  success: boolean;
+}
+
+/**
+ * List worktrees response
+ */
+export interface ListWorktreesResponse {
+  worktrees: WorktreeEntry[];
+}
+
+/**
+ * Create PR response
+ */
+export interface CreatePRResponse {
+  success: boolean;
+  pr_number?: number;
+  pr_url?: string;
+  error?: string;
+}
+
+/**
+ * Merge PR response
+ */
+export interface MergePRResponse {
+  success: boolean;
+  merged: boolean;
+  error?: string;
+}
+
+/**
+ * Rebase sibling result
+ */
+export interface RebaseSiblingResult {
+  bead_id: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Rebase siblings response
+ */
+export interface RebaseSiblingsResponse {
+  results: RebaseSiblingResult[];
+}
+
+/**
+ * Merge method for PR merging
+ */
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+/**
+ * GitHub status response
+ */
+export interface GitHubStatusResponse {
+  has_remote: boolean;
+  gh_authenticated: boolean;
+  error?: string;
+}
+
+/**
+ * Git API
+ */
+export const git = {
+  /**
+   * Get GitHub status for a repository
+   */
+  githubStatus: (repoPath: string) => fetchApi<GitHubStatusResponse>(
+    `/api/git/github-status?repo_path=${encodeURIComponent(repoPath)}`
+  ),
+  /**
+   * Get branch status relative to main
+   * @deprecated Use `worktreeStatus()` instead. Branch-based workflow is deprecated in favor of worktrees.
+   */
+  branchStatus: (path: string, branch: string) => fetchApi<BranchStatus>(
+    `/api/git/branch-status?path=${encodeURIComponent(path)}&branch=${encodeURIComponent(branch)}`
+  ),
+
+  // Worktree endpoints
+  worktreeStatus: (repoPath: string, beadId: string) => fetchApi<WorktreeStatus>(
+    `/api/git/worktree-status?repo_path=${encodeURIComponent(repoPath)}&bead_id=${encodeURIComponent(beadId)}`
+  ),
+
+  createWorktree: (repoPath: string, beadId: string, baseBranch = 'main') =>
+    fetchApi<CreateWorktreeResponse>('/api/git/worktree', {
+      method: 'POST',
+      body: JSON.stringify({ repo_path: repoPath, bead_id: beadId, base_branch: baseBranch }),
+    }),
+
+  deleteWorktree: (repoPath: string, beadId: string) =>
+    fetchApi<DeleteWorktreeResponse>('/api/git/worktree', {
+      method: 'DELETE',
+      body: JSON.stringify({ repo_path: repoPath, bead_id: beadId }),
+    }),
+
+  listWorktrees: (repoPath: string) => fetchApi<ListWorktreesResponse>(
+    `/api/git/worktrees?repo_path=${encodeURIComponent(repoPath)}`
+  ),
+
+  // PR endpoints
+  prStatus: (repoPath: string, beadId: string) => fetchApi<PRStatus>(
+    `/api/git/pr-status?repo_path=${encodeURIComponent(repoPath)}&bead_id=${encodeURIComponent(beadId)}`
+  ),
+
+  prFiles: (repoPath: string, beadId: string) => fetchApi<PRFilesResponse>(
+    `/api/git/pr-files?repo_path=${encodeURIComponent(repoPath)}&bead_id=${encodeURIComponent(beadId)}`
+  ),
+
+  createPR: (repoPath: string, beadId: string, title: string, body: string) =>
+    fetchApi<CreatePRResponse>('/api/git/create-pr', {
+      method: 'POST',
+      body: JSON.stringify({ repo_path: repoPath, bead_id: beadId, title, body }),
+    }),
+
+  mergePR: (repoPath: string, beadId: string, mergeMethod: MergeMethod = 'squash') =>
+    fetchApi<MergePRResponse>('/api/git/merge-pr', {
+      method: 'POST',
+      body: JSON.stringify({ repo_path: repoPath, bead_id: beadId, merge_method: mergeMethod }),
+    }),
+
+  rebaseSiblings: (repoPath: string, excludeBeadId: string) =>
+    fetchApi<RebaseSiblingsResponse>('/api/git/rebase-siblings', {
+      method: 'POST',
+      body: JSON.stringify({ repo_path: repoPath, exclude_bead_id: excludeBeadId }),
+    }),
+};
+
+/**
+ * File System API
+ */
+export const fs = {
+  list: (path: string) => fetchApi<{ entries: FsEntry[] }>(
+    `/api/fs/list?path=${encodeURIComponent(path)}`
+  ),
+
+  exists: (path: string) => fetchApi<{ exists: boolean }>(
+    `/api/fs/exists?path=${encodeURIComponent(path)}`
+  ),
+
+  openExternal: (path: string, target: 'vscode' | 'cursor' | 'finder') =>
+    fetchApi<{ success: boolean }>('/api/fs/open-external', {
+      method: 'POST',
+      body: JSON.stringify({ path, target }),
+    }),
+};
+
+/**
+ * Memory API
+ */
+export const memory = {
+  /**
+   * Fetch memory entries, stats, and facets.
+   * Optional filters are applied server-side (q, type, source, tag, since, until).
+   */
+  list: (path: string, filters?: MemoryListFilters) => {
+    const params = new URLSearchParams({ path });
+    for (const key of ['q', 'type', 'source', 'tag', 'since', 'until'] as const) {
+      const value = filters?.[key]?.trim();
+      if (value) params.set(key, value);
+    }
+    return fetchApi<MemoryResponse>(`/api/memory?${params.toString()}`);
+  },
+
+  /** Fetch memory stats only (lightweight) */
+  stats: (path: string) => fetchApi<MemoryStats>(
+    `/api/memory/stats?path=${encodeURIComponent(path)}`
+  ),
+
+  /** Create a new knowledge entry (appends to knowledge.jsonl) */
+  create: (path: string, content: string, type: MemoryType, tags: string[], bead?: string) =>
+    fetchApi<{ success: boolean; entry: MemoryEntry }>('/api/memory', {
+      method: 'POST',
+      body: JSON.stringify({ path, content, type, tags, bead: bead ?? '' }),
+    }),
+
+  /** Update an entry's content and/or tags */
+  update: (path: string, key: string, content?: string, tags?: string[]) =>
+    fetchApi<{ success: boolean; entry: MemoryEntry }>('/api/memory', {
+      method: 'PUT',
+      body: JSON.stringify({ path, key, content, tags }),
+    }),
+
+  /** Delete or archive an entry */
+  remove: (path: string, key: string, archive: boolean) =>
+    fetchApi<{ success: boolean; archived: boolean }>('/api/memory', {
+      method: 'DELETE',
+      body: JSON.stringify({ path, key, archive }),
+    }),
+};
+
+/**
+ * Agents API
+ */
+export const agents = {
+  /** List all agents for a project */
+  list: (path: string) =>
+    fetchApi<Agent[]>(`/api/agents?path=${encodeURIComponent(path)}`),
+
+  /** Update an agent's model or tools configuration */
+  update: (filename: string, path: string, data: { model: AgentModel; all_tools: boolean }) =>
+    fetchApi<Agent>(`/api/agents/${encodeURIComponent(filename)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, ...data }),
+    }),
+};
+
+/**
+ * File Watcher (Server-Sent Events)
+ */
+export const watch = {
+  beads: (path: string, onEvent: (event: WatchEvent) => void) => {
+    const eventSource = new EventSource(
+      `${API_BASE}/api/watch/beads?path=${encodeURIComponent(path)}`
+    );
+    eventSource.onmessage = (e) => onEvent(JSON.parse(e.data));
+    eventSource.onerror = () => eventSource.close();
+    return () => eventSource.close();
+  },
+};

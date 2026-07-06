@@ -1,0 +1,17 @@
+Sweetgrass
+Copyright (c) 2026 Palmetto Interactive LLC
+
+Sweetgrass is a heavily extended fork and continuation of the MIT-licensed
+Beads Kanban UI. GitHub no longer records this repository as a fork, so this
+notice preserves the upstream lineage explicitly.
+
+Derived from:
+  - Beads Kanban UI: https://github.com/AvivK5498/beads-web
+  - Beads CLI:       https://github.com/gastownhall/beads
+
+Palmetto Interactive extensions include the multi-project dashboard, GitOps
+pull-request workflow, epic and related-task views, Beads memory editor, agent
+definition panel, Rust backend packaging, release automation, and maintained
+Sweetgrass branding.
+
+Licensed under the MIT License. See LICENSE.

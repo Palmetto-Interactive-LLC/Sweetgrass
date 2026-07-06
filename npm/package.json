@@ -1,0 +1,21 @@
+{
+  "name": "sweetgrass",
+  "version": "0.1.0",
+  "description": "Visual developer workspace for Beads projects",
+  "bin": {
+    "sweetgrass": "./bin/cli.js",
+    "bead-kanban": "./bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Palmetto-Interactive-LLC/Sweetgrass.git"
+  },
+  "keywords": ["beads", "kanban", "developer-tools", "gitops", "cli"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
