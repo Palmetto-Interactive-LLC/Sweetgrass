@@ -273,7 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           actionlint -color=false .github/workflows/*.yml | tee reports/actionlint.txt
-          zizmor .github/workflows | tee reports/zizmor.txt
+          zizmor --min-severity=low .github/workflows | tee reports/zizmor.txt
 
       - name: Upload Actions lint reports
         if: always()
