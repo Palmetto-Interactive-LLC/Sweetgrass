@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -29,25 +29,33 @@ function findBinary() {
   return binaryPath;
 }
 
-// Open browser using platform-specific command
-function openBrowser(url) {
+// Open browser using platform-specific commands without shell interpolation.
+function openBrowser() {
   const platform = process.platform;
   let command;
+  let args;
 
   if (platform === 'darwin') {
-    command = `open "${url}"`;
+    command = 'open';
+    args = [URL];
   } else if (platform === 'win32') {
-    command = `start "" "${url}"`;
+    command = 'cmd.exe';
+    args = ['/c', 'start', '', URL];
   } else {
-    // Linux and others
-    command = `xdg-open "${url}"`;
+    command = 'xdg-open';
+    args = [URL];
   }
 
-  exec(command, (error) => {
-    if (error) {
-      console.log(`Could not open browser automatically. Please navigate to: ${url}`);
-    }
+  const browserProcess = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore'
   });
+
+  browserProcess.on('error', () => {
+    console.log(`Could not open browser automatically. Please navigate to: ${URL}`);
+  });
+
+  browserProcess.unref();
 }
 
 function main() {
@@ -88,7 +96,7 @@ function main() {
   // Auto-open browser after 1 second delay
   setTimeout(() => {
     console.log(`Opening browser at ${URL}`);
-    openBrowser(URL);
+    openBrowser();
   }, 1000);
 
   // Handle SIGINT (Ctrl+C) to gracefully shutdown
