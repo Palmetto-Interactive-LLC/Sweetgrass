@@ -83,7 +83,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, daytona]
     permissions:
       contents: write
 
@@ -111,7 +111,7 @@ jobs:
   publish-npm:
     name: publish-npm
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, daytona]
     permissions:
       contents: read
     steps:
