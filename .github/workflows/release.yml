@@ -13,26 +13,24 @@ on:
 
 permissions: {}
 
+# Every job runs on the GitHub-hosted ARM runner. That runner cannot produce
+# macOS or Windows binaries (no Apple SDK on Linux), so this release ships the
+# two Linux binaries only until Daytona v2 arm64 widens the fleet.
 jobs:
   build:
     name: build-${{ matrix.target }}
     strategy:
       matrix:
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: beads-server-darwin-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: beads-server-darwin-x64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            artifact: beads-server-linux-arm64
+          - target: x86_64-unknown-linux-gnu
             artifact: beads-server-linux-x64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: beads-server-win32-x64.exe
+            cross-packages: gcc-x86-64-linux-gnu libc6-dev-amd64-cross
+            linker-env: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
+            linker: x86_64-linux-gnu-gcc
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
 
@@ -60,19 +58,33 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Install cross compiler
+        if: matrix.cross-packages != ''
+        env:
+          PACKAGES: ${{ matrix.cross-packages }}
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $PACKAGES
+
       - name: Build server
         working-directory: server
-        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          LINKER_ENV: ${{ matrix.linker-env }}
+          LINKER: ${{ matrix.linker }}
+        run: |
+          if [ -n "$LINKER_ENV" ]; then export "$LINKER_ENV=$LINKER" CC_x86_64_unknown_linux_gnu="$LINKER"; fi
+          cargo build --release --target "$TARGET"
 
       - name: Copy binary
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "server/target/${{ matrix.target }}/release/beads-server.exe" "${{ matrix.artifact }}"
-          else
-            cp "server/target/${{ matrix.target }}/release/beads-server" "${{ matrix.artifact }}"
-          fi
+          cp "server/target/$TARGET/release/beads-server" "$ARTIFACT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -83,7 +95,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
 
@@ -111,7 +123,7 @@ jobs:
   publish-npm:
     name: publish-npm
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:
