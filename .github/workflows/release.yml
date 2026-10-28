@@ -13,24 +13,36 @@ on:
 
 permissions: {}
 
-# Every job runs on the GitHub-hosted ARM runner. That runner cannot produce
-# macOS or Windows binaries (no Apple SDK on Linux), so this release ships the
-# two Linux binaries only until Daytona v2 arm64 widens the fleet.
+# The release and npm publish jobs run on the GitHub-hosted ARM runner. The build
+# matrix is the platform-specific exception in the Palmetto Actions standard:
+# macOS and Windows binaries need macOS and Windows runners. The four assets
+# below are exactly the set npm/scripts/postinstall.js downloads; keep them in
+# step with its platformMap.
 jobs:
   build:
     name: build-${{ matrix.target }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-gnu
-            artifact: beads-server-linux-arm64
-          - target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: beads-server-darwin-arm64
+            binary: beads-server
+          - os: macos-15
+            target: x86_64-apple-darwin
+            artifact: beads-server-darwin-x64
+            binary: beads-server
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
             artifact: beads-server-linux-x64
-            cross-packages: gcc-x86-64-linux-gnu libc6-dev-amd64-cross
-            linker-env: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
-            linker: x86_64-linux-gnu-gcc
+            binary: beads-server
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: beads-server-win32-x64.exe
+            binary: beads-server.exe
 
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
 
@@ -58,33 +70,22 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - name: Install cross compiler
-        if: matrix.cross-packages != ''
-        env:
-          PACKAGES: ${{ matrix.cross-packages }}
-        run: |
-          sudo apt-get update
-          # shellcheck disable=SC2086
-          sudo apt-get install -y --no-install-recommends $PACKAGES
-
       - name: Build server
         working-directory: server
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          LINKER_ENV: ${{ matrix.linker-env }}
-          LINKER: ${{ matrix.linker }}
-        run: |
-          if [ -n "$LINKER_ENV" ]; then export "$LINKER_ENV=$LINKER" CC_x86_64_unknown_linux_gnu="$LINKER"; fi
-          cargo build --release --target "$TARGET"
+        run: cargo build --release --target "$TARGET"
 
       - name: Copy binary
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           ARTIFACT: ${{ matrix.artifact }}
+          BINARY: ${{ matrix.binary }}
         run: |
           set -euo pipefail
-          cp "server/target/$TARGET/release/beads-server" "$ARTIFACT"
+          cp "server/target/$TARGET/release/$BINARY" "$ARTIFACT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
