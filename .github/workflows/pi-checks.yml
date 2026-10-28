@@ -1,0 +1,29 @@
+name: PI Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: pi-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pi-checks:
+    permissions:
+      contents: read
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@a39c6b8e56e9339ddcbb964409be3dfc3b43e928 # v1
+    with:
+      stack: node
+      node-version: "24"
+      # Lint and typecheck run as the stack defaults. The build phase runs the
+      # static export, then the Rust server: rust-embed compiles ../out into
+      # the binary, so the frontend build has to finish before any cargo call.
+      build-command: >-
+        npm run build &&
+        cd server &&
+        cargo clippy --release &&
+        cargo test --release
