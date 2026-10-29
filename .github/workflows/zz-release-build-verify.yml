@@ -46,6 +46,25 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      # The CodeBuild Windows container cannot create rustup's component
+      # directories under the ContainerAdministrator profile (os error 161),
+      # so keep rustup and cargo in the job's temp directory there.
+      - name: Rust homes on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$env:RUNNER_TEMP\cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Toolchain probe (throwaway)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command bash, link.exe, cl.exe -ErrorAction SilentlyContinue | Format-Table Name, Source
+          Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio' -ErrorAction SilentlyContinue | Select-Object Name
+          Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -ErrorAction SilentlyContinue | Select-Object Name
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
