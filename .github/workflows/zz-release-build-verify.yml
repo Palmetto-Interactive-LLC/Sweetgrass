@@ -64,6 +64,10 @@ jobs:
           Get-Command bash, link.exe, cl.exe -ErrorAction SilentlyContinue | Format-Table Name, Source
           Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio' -ErrorAction SilentlyContinue | Select-Object Name
           Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -ErrorAction SilentlyContinue | Select-Object Name
+          Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2019' -ErrorAction SilentlyContinue | Select-Object Name
+          Get-ChildItem 'C:\Program Files (x86)\Microsoft Visual Studio\2019\*\VC\Tools\MSVC' -ErrorAction SilentlyContinue | Select-Object FullName
+          Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Lib' -ErrorAction SilentlyContinue | Select-Object Name
+          & 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -products * -format text -property installationPath
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
