@@ -13,11 +13,13 @@ on:
 
 permissions: {}
 
-# The release and npm publish jobs run on the GitHub-hosted ARM runner. The build
-# matrix is the platform-specific exception in the Palmetto Actions standard:
-# macOS and Windows binaries need macOS and Windows runners. The four assets
-# below are exactly the set npm/scripts/postinstall.js downloads; keep them in
-# step with its platformMap.
+# The release and npm publish jobs and the Linux x64 build run on the org
+# CodeBuild runner (codebuild-pi-actions). The macOS and Windows builds are the
+# Palmetto CI standard's exception and stay on GitHub-hosted runners, which are
+# free for this public repo: CodeBuild has macOS only on reserved Mac fleets,
+# and its Windows image has no MSVC C++ build tools (verified in #41). The four
+# assets below are exactly the set npm/scripts/postinstall.js downloads; keep
+# them in step with its platformMap.
 jobs:
   build:
     name: build-${{ matrix.target }}
@@ -33,7 +35,7 @@ jobs:
             target: x86_64-apple-darwin
             artifact: beads-server-darwin-x64
             binary: beads-server
-          - os: ubuntu-24.04
+          - os: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu-7.0-medium
             target: x86_64-unknown-linux-gnu
             artifact: beads-server-linux-x64
             binary: beads-server
@@ -96,7 +98,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: ubuntu-24.04-arm
+    runs-on: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: write
 
@@ -124,7 +126,7 @@ jobs:
   publish-npm:
     name: publish-npm
     needs: release
-    runs-on: ubuntu-24.04-arm
+    runs-on: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     steps:
