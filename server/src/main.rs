@@ -145,7 +145,7 @@ async fn main() {
         .route("/api/git/rebase-siblings", post(routes::worktree::rebase_siblings))
         // Agent endpoints
         .route("/api/agents", get(routes::agents::list_agents))
-        .route("/api/agents/:filename", put(routes::agents::update_agent))
+        .route("/api/agents/{filename}", put(routes::agents::update_agent))
         // Memory endpoints
         .route(
             "/api/memory",
