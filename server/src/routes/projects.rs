@@ -80,7 +80,7 @@ pub async fn create_project(
     Ok((StatusCode::CREATED, Json(project_with_tags)))
 }
 
-/// PATCH /api/projects/:id - Update a project
+/// PATCH /api/projects/{id} - Update a project
 pub async fn update_project(
     State(db): State<AppState>,
     Path(id): Path<String>,
@@ -99,7 +99,7 @@ pub async fn update_project(
     }))
 }
 
-/// DELETE /api/projects/:id - Delete a project
+/// DELETE /api/projects/{id} - Delete a project
 pub async fn delete_project(
     State(db): State<AppState>,
     Path(id): Path<String>,
@@ -126,7 +126,7 @@ pub async fn create_tag(
     Ok((StatusCode::CREATED, Json(tag)))
 }
 
-/// DELETE /api/tags/:id - Delete a tag
+/// DELETE /api/tags/{id} - Delete a tag
 pub async fn delete_tag(
     State(db): State<AppState>,
     Path(id): Path<String>,
@@ -147,7 +147,7 @@ pub async fn add_project_tag(
     Ok((StatusCode::CREATED, Json(SuccessResponse { success: true })))
 }
 
-/// DELETE /api/project-tags/:project_id/:tag_id - Remove a tag from a project
+/// DELETE /api/project-tags/{project_id}/{tag_id} - Remove a tag from a project
 pub async fn remove_project_tag(
     State(db): State<AppState>,
     Path((project_id, tag_id)): Path<(String, String)>,
@@ -165,13 +165,13 @@ pub fn project_routes() -> axum::Router<AppState> {
         // Project routes
         .route("/projects", get(list_projects).post(create_project))
         .route(
-            "/projects/:id",
+            "/projects/{id}",
             patch(update_project).delete(delete_project),
         )
         // Tag routes
         .route("/tags", get(list_tags).post(create_tag))
-        .route("/tags/:id", delete(delete_tag))
+        .route("/tags/{id}", delete(delete_tag))
         // Project-tag relationship routes
         .route("/project-tags", post(add_project_tag))
-        .route("/project-tags/:project_id/:tag_id", delete(remove_project_tag))
+        .route("/project-tags/{project_id}/{tag_id}", delete(remove_project_tag))
 }

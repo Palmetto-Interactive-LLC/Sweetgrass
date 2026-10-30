@@ -274,7 +274,7 @@ pub async fn list_agents(Query(params): Query<AgentParams>) -> impl IntoResponse
     (StatusCode::OK, Json(serde_json::json!(agents)))
 }
 
-/// PUT /api/agents/:filename
+/// PUT /api/agents/{filename}
 ///
 /// Updates the model and optionally sets tools to `*` in an agent file.
 /// Preserves the markdown body and other frontmatter fields.
