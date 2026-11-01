@@ -13,11 +13,10 @@ on:
 
 permissions: {}
 
-# The release and npm publish jobs and the Linux x64 build run on the org
-# CodeBuild runner (codebuild-pi-actions). The macOS and Windows builds are the
-# Palmetto CI standard's exception and stay on GitHub-hosted runners, which are
-# free for this public repo: CodeBuild has macOS only on reserved Mac fleets,
-# and its Windows image has no MSVC C++ build tools (verified in #41). The four
+# This is the one workflow that stays on GitHub: Depot CI has no release
+# trigger, environments, or macOS/Windows runners, and the release needs native
+# macOS and Windows binaries. Every job runs on GitHub-hosted runners, which are
+# free for this public repo. (CodeBuild is retired; PR checks are on Depot CI.) The four
 # assets below are exactly the set npm/scripts/postinstall.js downloads; keep
 # them in step with its platformMap.
 jobs:
@@ -35,7 +34,7 @@ jobs:
             target: x86_64-apple-darwin
             artifact: beads-server-darwin-x64
             binary: beads-server
-          - os: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}-ubuntu-7.0-medium
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             artifact: beads-server-linux-x64
             binary: beads-server
@@ -98,7 +97,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
@@ -126,7 +125,7 @@ jobs:
   publish-npm:
     name: publish-npm
     needs: release
-    runs-on: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
