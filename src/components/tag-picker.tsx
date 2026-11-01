@@ -38,21 +38,21 @@ export function TagPicker({
   const [newTagColor, setNewTagColor] = React.useState("#3b82f6");
   const [isLoading, setIsLoading] = React.useState(false);
 
-  // Load all tags when popover opens
-  React.useEffect(() => {
-    if (isOpen) {
-      loadTags();
-    }
-  }, [isOpen]);
-
-  const loadTags = async () => {
+  const loadTags = React.useCallback(async () => {
     try {
       const tags = await getTags();
       setAllTags(tags);
     } catch (error) {
       console.error("Failed to load tags:", error);
     }
-  };
+  }, []);
+
+  // Load all tags when popover opens.
+  React.useEffect(() => {
+    if (isOpen) {
+      void loadTags();
+    }
+  }, [isOpen, loadTags]);
 
   const isTagSelected = (tagId: string) => {
     return projectTags.some((t) => t.id === tagId);

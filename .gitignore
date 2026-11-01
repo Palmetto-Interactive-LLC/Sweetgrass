@@ -69,3 +69,6 @@ Vent
 .claude/codebase.json
 .claude/CODEBASE.md
 .claude/.agentifind-checksum
+
+# Downloaded CI tools
+.cache/
