@@ -5,13 +5,13 @@
     "dev": "next dev -p 3007",
     "build": "next build",
     "start": "next start -p 3007",
-    "lint": "eslint src npm --ext .js,.jsx,.ts,.tsx --ignore-pattern out --ignore-pattern .next --ignore-pattern server/target",
+    "lint": "eslint src npm",
     "typecheck": "tsc --noEmit",
     "server:dev": "cd server && cargo run",
     "server:build": "cd server && cargo build --release",
     "dev:full": "concurrently \"npm run dev\" \"npm run server:dev\"",
     "prepare": "bash scripts/install-hooks.sh",
-    "lint:fix": "eslint src npm --ext .js,.jsx,.ts,.tsx --fix --ignore-pattern out --ignore-pattern .next --ignore-pattern server/target",
+    "lint:fix": "eslint src npm --fix",
     "precommit:full": "npm run lint && npm run typecheck && npm run build && cd server && cargo clippy -- -D warnings && cargo test"
   },
   "dependencies": {
@@ -53,19 +53,23 @@
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.20",
-    "@types/node": "^20.0.0",
+    "@types/node": "^24.19.2",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.6.2",
     "concurrently": "^8.2.0",
-    "eslint": "^8.0.0",
-    "eslint-config-next": "^15.5.28",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.4.3",
     "playwright": "^1.64.1",
     "postcss": "^8.5.32",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.72.1"
   },
   "overrides": {
     "postcss": "$postcss"
+  },
+  "engines": {
+    "node": ">=24 <25"
   }
 }
