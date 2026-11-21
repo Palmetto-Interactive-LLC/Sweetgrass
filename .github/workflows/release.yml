@@ -97,7 +97,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: membl
     permissions:
       contents: write
 
@@ -125,7 +125,7 @@ jobs:
   publish-npm:
     name: publish-npm
     needs: release
-    runs-on: ubuntu-24.04
+    runs-on: membl
     permissions:
       contents: read
     steps:
